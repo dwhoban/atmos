@@ -22,10 +22,12 @@ func TestClientSkillDir(t *testing.T) {
 		want   string
 	}{
 		{"claude-code project scope", ClientClaudeCode, ScopeProject, filepath.Join(base, ".claude", "skills")},
+		{"opencode project scope", ClientOpenCode, ScopeProject, filepath.Join(base, ".opencode", "skills")},
 		{"vscode project scope", ClientVSCode, ScopeProject, filepath.Join(base, ".github", "skills")},
 		{"gemini project scope", ClientGemini, ScopeProject, filepath.Join(base, ".gemini", "skills")},
 		{"unsupported client project scope returns empty", "unknown", ScopeProject, ""},
 		{"claude-code user scope", ClientClaudeCode, ScopeUser, filepath.Join(home, ".claude", "skills")},
+		{"opencode user scope uses .config/opencode", ClientOpenCode, ScopeUser, filepath.Join(home, ".config", "opencode", "skills")},
 		{"vscode user scope uses .copilot, not .github", ClientVSCode, ScopeUser, filepath.Join(home, ".copilot", "skills")},
 		{"gemini user scope", ClientGemini, ScopeUser, filepath.Join(home, ".gemini", "skills")},
 		{"unsupported client user scope returns empty", "unknown", ScopeUser, ""},
@@ -49,10 +51,12 @@ func TestClientSignalDir(t *testing.T) {
 		want   string
 	}{
 		{"claude-code project scope", ClientClaudeCode, ScopeProject, filepath.Join(base, ".claude")},
+		{"opencode project scope", ClientOpenCode, ScopeProject, filepath.Join(base, ".opencode")},
 		{"vscode project scope", ClientVSCode, ScopeProject, filepath.Join(base, ".vscode")},
 		{"gemini project scope", ClientGemini, ScopeProject, filepath.Join(base, ".gemini")},
 		{"unsupported client project scope returns empty", "unknown", ScopeProject, ""},
 		{"claude-code user scope", ClientClaudeCode, ScopeUser, filepath.Join(home, ".claude")},
+		{"opencode user scope uses .config/opencode signal", ClientOpenCode, ScopeUser, filepath.Join(home, ".config", "opencode")},
 		{"vscode user scope uses .copilot signal, not .vscode", ClientVSCode, ScopeUser, filepath.Join(home, ".copilot")},
 		{"gemini user scope", ClientGemini, ScopeUser, filepath.Join(home, ".gemini")},
 		{"unsupported client user scope returns empty", "unknown", ScopeUser, ""},
@@ -92,6 +96,12 @@ func TestDetectClients(t *testing.T) {
 		assert.Equal(t, []string{ClientGemini}, DetectClients(base, "", ScopeProject))
 	})
 
+	t.Run("detects opencode from .opencode", func(t *testing.T) {
+		base := t.TempDir()
+		require.NoError(t, os.MkdirAll(filepath.Join(base, ".opencode"), 0o755))
+		assert.Equal(t, []string{ClientOpenCode}, DetectClients(base, "", ScopeProject))
+	})
+
 	t.Run("detects multiple clients in declared order", func(t *testing.T) {
 		base := t.TempDir()
 		require.NoError(t, os.MkdirAll(filepath.Join(base, ".claude"), 0o755))
@@ -118,6 +128,14 @@ func TestDetectClients(t *testing.T) {
 		require.NoError(t, os.MkdirAll(filepath.Join(home, ".gemini"), 0o755))
 
 		assert.Equal(t, []string{ClientClaudeCode, ClientGemini}, DetectClients(base, home, ScopeUser))
+	})
+
+	t.Run("user scope detects opencode from .config/opencode under home dir", func(t *testing.T) {
+		base := t.TempDir()
+		home := t.TempDir()
+		require.NoError(t, os.MkdirAll(filepath.Join(home, ".config", "opencode"), 0o755))
+
+		assert.Equal(t, []string{ClientOpenCode}, DetectClients(base, home, ScopeUser))
 	})
 
 	t.Run("empty homeDir resolves via homedir.Dir()", func(t *testing.T) {

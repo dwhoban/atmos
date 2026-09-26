@@ -222,7 +222,7 @@ When using a CLI provider (`claude-code`, `codex-cli`, `copilot-cli`, `opencode`
 | Claude Code | `--mcp-config` temp file | Full support |
 | Codex CLI | `~/.codex/config.toml` (backup/restore) | `ATMOS_*` env vars injected |
 | Copilot CLI | `~/.copilot/mcp-config.json` (backup/restore) | Honors `COPILOT_HOME` |
-| opencode | Temp config referenced by `OPENCODE_CONFIG` | Deep-merged by opencode; your `opencode.json` is never modified; the temp file is removed after each run |
+| opencode | Temp config referenced by `OPENCODE_CONFIG` | Deep-merged by opencode; your `opencode.json` is never modified; the temp file is removed after each run. On opencode v2, invocations run with `--standalone` — required for the temp config to be honored, since v2's background service resolves config in its own process |
 | Gemini CLI | `.gemini/settings.json` in cwd (backup/restore) | MCP blocked for personal Google accounts |
 
 :::tip

@@ -8,7 +8,7 @@ import (
 )
 
 func init() {
-	registry.Register(ProviderName, func(_ context.Context, atmosConfig *schema.AtmosConfiguration) (registry.Client, error) {
-		return NewClient(atmosConfig)
+	registry.Register(ProviderName, func(ctx context.Context, atmosConfig *schema.AtmosConfiguration) (registry.Client, error) {
+		return NewClient(ctx, atmosConfig)
 	})
 }

@@ -10,6 +10,7 @@ import (
 // Supported AI clients for skill distribution.
 const (
 	ClientClaudeCode = "claude-code"
+	ClientOpenCode   = "opencode"
 	ClientVSCode     = "vscode" // Also covers GitHub Copilot in VS Code.
 	ClientGemini     = "gemini"
 )
@@ -28,16 +29,19 @@ const (
 	skillsLeafName = "skills"
 	dotClaude      = ".claude"
 	dotGemini      = ".gemini"
+	dotOpenCode    = ".opencode"
 )
 
 // SupportedClients lists every AI client `atmos ai skill install`/`uninstall`
-// can distribute a skill to.
+// can distribute a skill to. Since v2, opencode discovers skills natively
+// (opencode.ai/docs/skills); it also reads .claude/skills for compatibility, but
+// the native .opencode/skills path is preferred so opencode-only projects work.
 //
 // Deliberately excluded: Cursor (no native project-local skill file format --
 // curated marketplace only, per docs/prd/atmos-agent-skills.md) and Codex
 // (needs an AGENTS.md index/routing-table merge, not a plain directory copy --
 // a structurally different write strategy left for follow-up work).
-var SupportedClients = []string{ClientClaudeCode, ClientVSCode, ClientGemini}
+var SupportedClients = []string{ClientClaudeCode, ClientOpenCode, ClientVSCode, ClientGemini}
 
 // projectSkillLeaf returns a client's project-scoped skill directory, relative
 // to basePath.
@@ -45,6 +49,8 @@ func projectSkillLeaf(client string) string {
 	switch client {
 	case ClientClaudeCode:
 		return filepath.Join(dotClaude, skillsLeafName)
+	case ClientOpenCode:
+		return filepath.Join(dotOpenCode, skillsLeafName)
 	case ClientVSCode:
 		return filepath.Join(".github", skillsLeafName)
 	case ClientGemini:
@@ -59,11 +65,15 @@ func projectSkillLeaf(client string) string {
 // .github/skills -- GitHub Copilot's personal directory
 // (docs.github.com/en/copilot/concepts/agents/about-agent-skills,
 // code.visualstudio.com/docs/agent-customization/agent-skills) is a distinct
-// path from its project-level one.
+// path from its project-level one. The opencode personal directory is
+// ~/.config/opencode/skills (opencode.ai/docs/skills), the same XDG-style
+// location pkg/mcp/install uses for its global opencode config.
 func userSkillLeaf(client string) string {
 	switch client {
 	case ClientClaudeCode:
 		return filepath.Join(dotClaude, skillsLeafName)
+	case ClientOpenCode:
+		return filepath.Join(".config", "opencode", skillsLeafName)
 	case ClientVSCode:
 		return filepath.Join(".copilot", skillsLeafName)
 	case ClientGemini:
@@ -96,6 +106,8 @@ func projectSignalLeaf(client string) string {
 	switch client {
 	case ClientClaudeCode:
 		return dotClaude
+	case ClientOpenCode:
+		return dotOpenCode
 	case ClientVSCode:
 		return ".vscode"
 	case ClientGemini:
@@ -108,11 +120,14 @@ func projectSignalLeaf(client string) string {
 // userSignalLeaf is projectSignalLeaf's user-scope (global) counterpart, with
 // the vscode client's user-scope signal being .copilot (there's no
 // project-level ".copilot" concept); claude-code/gemini use the same leaf
-// name at both scopes.
+// name at both scopes, and opencode's is the .config/opencode directory that
+// holds its global config (and skills).
 func userSignalLeaf(client string) string {
 	switch client {
 	case ClientClaudeCode:
 		return dotClaude
+	case ClientOpenCode:
+		return filepath.Join(".config", "opencode")
 	case ClientVSCode:
 		return ".copilot"
 	case ClientGemini:

@@ -9,13 +9,33 @@ import (
 // CLI so SendMessage can be exercised cross-platform without a real binary or a
 // platform-specific shell (see CLAUDE.md "Subprocess helpers in tests").
 const (
-	fakeStdoutEnv = "_ATMOS_OPENCODE_FAKE_STDOUT"
-	fakeFailEnv   = "_ATMOS_OPENCODE_FAKE_FAIL"
+	fakeStdoutEnv  = "_ATMOS_OPENCODE_FAKE_STDOUT"
+	fakeFailEnv    = "_ATMOS_OPENCODE_FAKE_FAIL"
+	fakeVersionEnv = "_ATMOS_OPENCODE_FAKE_VERSION"
 )
+
+// defaultFakeVersion is what the fake binary answers for `--version` when
+// fakeVersionEnv is unset; it mirrors the current opencode v2 output format.
+const defaultFakeVersion = "opencode v2.0.18"
 
 // TestMain lets the test binary act as a fake `opencode` when a gate env var is set:
 // it writes the canned stdout and/or exits non-zero, then returns before running tests.
 func TestMain(m *testing.M) {
+	// Impersonate `opencode --version` for the NewClient version probe: print the canned
+	// version (defaulting to a v2 string) and exit before the run-mode gate env vars.
+	// With fakeFailEnv set, --version exits non-zero with no output, simulating a binary
+	// whose version probe can't be parsed (NewClient must then assume v2).
+	if len(os.Args) > 1 && os.Args[1] == "--version" {
+		if os.Getenv(fakeFailEnv) == "1" {
+			os.Exit(1)
+		}
+		out := os.Getenv(fakeVersionEnv)
+		if out == "" {
+			out = defaultFakeVersion
+		}
+		_, _ = os.Stdout.WriteString(out + "\n")
+		os.Exit(0)
+	}
 	if out := os.Getenv(fakeStdoutEnv); out != "" {
 		_, _ = os.Stdout.WriteString(out)
 		if os.Getenv(fakeFailEnv) == "1" {

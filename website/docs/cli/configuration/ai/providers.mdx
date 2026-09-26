@@ -115,7 +115,7 @@ assumption it makes about `terraform` or `tofu`. Atmos does not install `claude`
   <dd>GitHub Copilot subscription. Full MCP support. Authenticates via `copilot /login` or `COPILOT_GITHUB_TOKEN` / `GH_TOKEN` / `GITHUB_TOKEN`.</dd>
 
   <dt>**opencode** — `opencode`</dt>
-  <dd>Open-source terminal coding agent. Full MCP support. Uses whichever model provider you have configured and authenticated in opencode (`opencode auth login`).</dd>
+  <dd>Open-source terminal coding agent. Full MCP support. Uses whichever model provider you have configured and authenticated in opencode (`opencode auth login`). Detects your opencode major version at invocation time: on v2 it runs each request with `--standalone` and parses the structured `--format json` output (required for `OPENCODE_CONFIG`-based MCP pass-through, since v2's background service resolves config in its own process); on v1 it uses the legacy plain-text invocation.</dd>
 
   <dt>**Gemini CLI** — `gemini-cli`</dt>
   <dd>Google account (free tier: 1K req/day). MCP blocked for personal accounts.</dd>
@@ -196,7 +196,7 @@ ai:
       full_auto: true
 
     opencode:
-      model: "anthropic/claude-sonnet-4-5"  # opencode's provider/model slug
+      model: "anthropic/claude-sonnet-4-5"  # opencode's provider/model slug; v2 also supports a #variant suffix (e.g. ...#thinking)
       full_auto: true
 
     gemini-cli:
@@ -211,7 +211,7 @@ When `mcp.servers` is configured, CLI providers automatically pass MCP servers t
 - **Claude Code:** Temp `.mcp.json` via `--mcp-config`
 - **Codex CLI:** Written to `~/.codex/config.toml` (backup/restore after exit)
 - **Copilot CLI:** Merged into `~/.copilot/mcp-config.json` (backup/restore after exit; honors `COPILOT_HOME`)
-- **opencode:** Written to a temp config passed via `OPENCODE_CONFIG` (deep-merged by opencode; no user file is modified)
+- **opencode:** Written to a temp config passed via `OPENCODE_CONFIG` (deep-merged by opencode; no user file is modified). On opencode v2, requests run with `--standalone` so the temp config is actually honored — v2's background service otherwise resolves config in its own process and would ignore it
 - **Gemini CLI:** Written to `.gemini/settings.json` in cwd (backup/restore, MCP blocked for personal accounts)
 
 Auth-requiring servers are wrapped with `atmos auth exec -i <identity>`. Toolchain PATH and `ATMOS_*` env vars are injected automatically.

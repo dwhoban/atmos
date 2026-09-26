@@ -135,9 +135,9 @@ Install a skill by its bundled name (offline) or from a GitHub repository.
 
 The official Atmos skills are embedded in the binary, so installing one by its bare name (for example `atmos-terraform`) works fully offline — no network or Git clone required. Run `atmos ai skill list` to see every available skill. You can also install any skill from a GitHub repository. Omit `<source>` entirely to install every bundled skill at once.
 
-By default, the skill is also auto-distributed into any detected AI client's project-local skill directory (`.github/skills/` for VS Code/Copilot, `.claude/skills/` for Claude Code, `.gemini/skills/` for Gemini), so it works with zero extra flags. Use `--client`/`--all-clients` to control which clients receive a copy, or `--path` to take full manual control of the install location (this skips auto-distribution).
+By default, the skill is also auto-distributed into any detected AI client's project-local skill directory (`.github/skills/` for VS Code/Copilot, `.claude/skills/` for Claude Code, `.opencode/skills/` for opencode, `.gemini/skills/` for Gemini), so it works with zero extra flags. Use `--client`/`--all-clients` to control which clients receive a copy, or `--path` to take full manual control of the install location (this skips auto-distribution).
 
-Use `--scope user` (or `--global`) to distribute into each client's personal, user-level skill directory instead (`~/.claude/skills/`, `~/.copilot/skills/` for VS Code/Copilot, `~/.gemini/skills/`), so the skill is available across every project rather than just this one. When neither `--scope` nor `--global` is given and the command is running in an interactive terminal, Atmos prompts you to choose project or user scope; `--yes`, a non-TTY session, or CI skips the prompt and defaults to `project`.
+Use `--scope user` (or `--global`) to distribute into each client's personal, user-level skill directory instead (`~/.claude/skills/`, `~/.config/opencode/skills/` for opencode, `~/.copilot/skills/` for VS Code/Copilot, `~/.gemini/skills/`), so the skill is available across every project rather than just this one. When neither `--scope` nor `--global` is given and the command is running in an interactive terminal, Atmos prompts you to choose project or user scope; `--yes`, a non-TTY session, or CI skips the prompt and defaults to `project`.
 
 If a client's target directory already exists as a symbolic link (for example this repo's own `.claude/skills/<name>` entries, which intentionally point into `agent-skills/skills/<name>` for contributor auto-discovery), that client is skipped with a warning instead of writing through the symlink.
 
@@ -159,7 +159,7 @@ atmos ai skill install [source] [flags]
   <dd>Override the skill install directory (default: `~/.atmos/skills`). Relative paths resolve against the current working directory, e.g. `--path .github/skills` for VS Code/Copilot auto-discovery. Setting `--path` skips auto-distribution to AI clients.</dd>
 
   <dt>`-c, --client`</dt>
-  <dd>AI client to distribute the skill to (repeatable): `claude-code`, `vscode`, `gemini`. Defaults to auto-detected clients.</dd>
+  <dd>AI client to distribute the skill to (repeatable): `claude-code`, `opencode`, `vscode`, `gemini`. Defaults to auto-detected clients.</dd>
 
   <dt>`--all-clients`</dt>
   <dd>Distribute the skill to every supported AI client.</dd>
@@ -258,7 +258,7 @@ atmos ai skill update [name] [flags]
   <dd>Override the skill install directory (default: `~/.atmos/skills`). Relative paths resolve against the current working directory.</dd>
 
   <dt>`-c, --client`</dt>
-  <dd>AI client to distribute the updated skill to (repeatable): `claude-code`, `vscode`, `gemini`. Defaults to auto-detected clients.</dd>
+  <dd>AI client to distribute the updated skill to (repeatable): `claude-code`, `opencode`, `vscode`, `gemini`. Defaults to auto-detected clients.</dd>
 
   <dt>`--all-clients`</dt>
   <dd>Distribute the updated skill to every supported AI client.</dd>
@@ -305,7 +305,7 @@ atmos ai skill uninstall [name] [flags]
   <dd>Skip the confirmation prompt.</dd>
 
   <dt>`-c, --client`</dt>
-  <dd>AI client to remove the skill from (repeatable): `claude-code`, `vscode`, `gemini`. Defaults to auto-detected clients.</dd>
+  <dd>AI client to remove the skill from (repeatable): `claude-code`, `opencode`, `vscode`, `gemini`. Defaults to auto-detected clients.</dd>
 
   <dt>`--all-clients`</dt>
   <dd>Remove the skill from every supported AI client.</dd>
