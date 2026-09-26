@@ -149,6 +149,20 @@ type ChatModel struct {
 	selectedSkillIdx     int                   // Selected skill index in skill selection UI
 	loadingText          string                // Text to display next to spinner
 	turnSteps            []turnStep            // Steps (AI calls + tool executions) in the current turn
+
+	// Provider-side session continuation (types.NativeSessionClient): the provider
+	// (opencode v2+) holds the conversation context and each turn sends only the new
+	// user message. nativeSessionKey namespaces the stored ID by provider so a
+	// mid-chat provider switch never resumes another provider's session;
+	// nativeSessionSystemPrompt/AtmosMemory snapshot the opening-turn instructions so
+	// a skill or memory change restarts the provider session instead of silently
+	// keeping stale instructions; nativeSessionDisabled stops retrying after the
+	// capability is off or repeatedly failing for this chat run.
+	nativeSessionID           string
+	nativeSessionKey          string
+	nativeSessionSystemPrompt string
+	nativeSessionAtmosMemory  string
+	nativeSessionDisabled     bool
 }
 
 // ChatMessage represents a single message in the chat.

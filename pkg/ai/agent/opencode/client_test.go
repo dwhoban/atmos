@@ -330,6 +330,124 @@ func TestWriteTempMCPConfig_AuthWrapped(t *testing.T) {
 	assert.Contains(t, cmd, "readonly")
 }
 
+// TestNewClient_NativeSessionsConfig verifies the native_sessions knob: default
+// enabled on v2, disabled by explicit opt-out, and forced off on v1 binaries.
+func TestNewClient_NativeSessionsConfig(t *testing.T) {
+	client, err := NewClient(t.Context(), fakeProviderConfig(t))
+	require.NoError(t, err)
+	assert.True(t, client.nativeSessions)
+
+	off := false
+	client, err = NewClient(t.Context(), &schema.AtmosConfiguration{
+		AI: schema.AISettings{
+			Enabled:   true,
+			Providers: map[string]*schema.AIProviderConfig{ProviderName: {Binary: testExecutable(t), NativeSessions: &off}},
+		},
+	})
+	require.NoError(t, err)
+	assert.False(t, client.nativeSessions)
+
+	t.Setenv(fakeVersionEnv, "opencode v1.0.243")
+	client, err = NewClient(t.Context(), fakeProviderConfig(t))
+	require.NoError(t, err)
+	assert.False(t, client.nativeSessions)
+}
+
+// fakeJSONL builds a minimal v2 JSONL stream whose final step carries text and whose
+// events carry the given session ID.
+func fakeJSONL(sessionID, text string) string {
+	return strings.Join([]string{
+		`{"type":"step_start","sessionID":"` + sessionID + `","part":{"type":"step-start"}}`,
+		`{"type":"text","sessionID":"` + sessionID + `","part":{"type":"text","text":"` + text + `"}}`,
+		`{"type":"step_finish","sessionID":"` + sessionID + `","part":{"type":"step-finish"}}`,
+	}, "\n") + "\n"
+}
+
+// recordedArgs points the fake binary's argv recorder at a temp file and returns a
+// read-back function for asserting on invocation flags.
+func recordedArgs(t *testing.T) func() []string {
+	t.Helper()
+	argsFile := filepath.Join(t.TempDir(), "args.txt")
+	t.Setenv(fakeArgsEnv, argsFile)
+	return func() []string {
+		data, err := os.ReadFile(argsFile)
+		require.NoError(t, err)
+		return strings.Split(strings.TrimRight(string(data), "\x00"), "\x00")
+	}
+}
+
+func TestNativeSessionProvider(t *testing.T) {
+	assert.Equal(t, ProviderName, (&Client{}).NativeSessionProvider())
+}
+
+func TestStartNativeSession(t *testing.T) {
+	t.Setenv(fakeStdoutEnv, fakeJSONL("ses_abc", "the native reply"))
+	readArgs := recordedArgs(t)
+	c := &Client{binaryPath: testExecutable(t), model: ProviderName, majorVersion: 2, nativeSessions: true}
+
+	reply, sessionID, err := c.StartNativeSession(
+		t.Context(), "SYS-PROMPT", "ATMOS-MEMORY",
+		[]types.Message{{Role: types.RoleUser, Content: "hello"}}, "my-chat",
+	)
+	require.NoError(t, err)
+	assert.Equal(t, "the native reply", reply)
+	assert.Equal(t, "ses_abc", sessionID)
+
+	args := readArgs()
+	require.NotEmpty(t, args)
+	assert.Equal(t, "run", args[0])
+	// The opening prompt mirrors SendMessageWithSystemPromptAndTools shaping: memory,
+	// system prompt, then the messages.
+	assert.Contains(t, args[1], "ATMOS-MEMORY")
+	assert.Contains(t, args[1], "SYS-PROMPT")
+	assert.Contains(t, args[1], "hello")
+	assert.Contains(t, args, "--standalone")
+	assert.Contains(t, args, "--format")
+	assert.Contains(t, args, "json")
+	assert.Contains(t, args, "--title")
+	assert.Contains(t, args, "my-chat")
+}
+
+func TestStartNativeSession_Disabled(t *testing.T) {
+	c := &Client{binaryPath: testExecutable(t), model: ProviderName, majorVersion: 2}
+	_, _, err := c.StartNativeSession(t.Context(), "", "", []types.Message{{Role: types.RoleUser, Content: "hi"}}, "")
+	assert.ErrorIs(t, err, errUtils.ErrCLIProviderNativeSessionsOff)
+}
+
+func TestStartNativeSession_NoSessionIDInStream(t *testing.T) {
+	t.Setenv(fakeStdoutEnv, `{"type":"text","part":{"type":"text","text":"hi"}}`+"\n")
+	c := &Client{binaryPath: testExecutable(t), model: ProviderName, majorVersion: 2, nativeSessions: true}
+
+	_, _, err := c.StartNativeSession(t.Context(), "", "", []types.Message{{Role: types.RoleUser, Content: "hi"}}, "")
+	assert.ErrorIs(t, err, errUtils.ErrCLIProviderNativeSessionIDAbsent)
+}
+
+func TestContinueNativeSession(t *testing.T) {
+	t.Setenv(fakeStdoutEnv, fakeJSONL("ses_abc", "follow-up reply"))
+	readArgs := recordedArgs(t)
+	c := &Client{binaryPath: testExecutable(t), model: ProviderName, majorVersion: 2, nativeSessions: true}
+
+	reply, err := c.ContinueNativeSession(t.Context(), "ses_abc", "next turn only")
+	require.NoError(t, err)
+	assert.Equal(t, "follow-up reply", reply)
+
+	args := readArgs()
+	assert.Equal(t, "run", args[0])
+	// Continuation's whole prompt is the new user message: no history re-serialization.
+	assert.Equal(t, "next turn only", args[1])
+	assert.Contains(t, args, "--standalone")
+	assert.Contains(t, args, "--session")
+	assert.Contains(t, args, "ses_abc")
+	// --fork would copy the session to a new ID, leaving Atmos's stored ID stale.
+	assert.NotContains(t, args, "--fork")
+}
+
+func TestContinueNativeSession_Disabled(t *testing.T) {
+	c := &Client{binaryPath: testExecutable(t), model: ProviderName, majorVersion: 2}
+	_, err := c.ContinueNativeSession(t.Context(), "ses_abc", "hi")
+	assert.ErrorIs(t, err, errUtils.ErrCLIProviderNativeSessionsOff)
+}
+
 func TestSendMessageWithTools_NotSupported(t *testing.T) {
 	c := &Client{}
 	_, err := c.SendMessageWithTools(t.Context(), "x", nil)

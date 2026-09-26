@@ -42,6 +42,9 @@ const (
 	configSchemaURL = "https://opencode.ai/config.json"
 	// File mode for the temp MCP config (owner-only read/write).
 	configFilePerms = 0o600
+	// Separator used to join prompt sections (Atmos memory, system prompt, message
+	// history) when a conversation is flattened into a single `run` prompt.
+	promptSeparator = "\n\n"
 	// Timeout for the `opencode --version` probe run once per client construction;
 	// a hung binary must not stall provider creation.
 	versionProbeTimeout = 5 * time.Second
@@ -57,6 +60,10 @@ type Client struct {
 	mcpServers    map[string]schema.MCPServerConfig
 	toolchainPATH string
 	hasMCPServers bool // True if MCP servers were configured for pass-through.
+	// nativeSessions enables types.NativeSessionClient behavior (provider-side session
+	// continuation for `atmos ai chat`). Requires majorVersion >= 2 and no explicit
+	// native_sessions: false in provider config.
+	nativeSessions bool
 	// majorVersion is the detected opencode major version. 0 behaves as v1 (the zero
 	// value keeps struct-literal-constructed clients on the legacy invocation path);
 	// NewClient always sets it via a --version probe, assuming v2 when the probe fails.
@@ -81,15 +88,7 @@ func NewClient(ctx context.Context, atmosConfig *schema.AtmosConfiguration) (*Cl
 		model: config.Model,
 	}
 
-	if providerConfig != nil {
-		if providerConfig.Binary != "" {
-			client.binaryPath = providerConfig.Binary
-		}
-		if providerConfig.Model != "" {
-			client.model = providerConfig.Model
-		}
-		client.fullAuto = providerConfig.FullAuto
-	}
+	applyProviderConfig(client, providerConfig)
 
 	// Resolve binary path.
 	if client.binaryPath == "" {
@@ -107,6 +106,11 @@ func NewClient(ctx context.Context, atmosConfig *schema.AtmosConfiguration) (*Cl
 	// Detect the opencode major version so invocation flags match the binary's CLI
 	// generation (see buildArgs for why v2 flags matter).
 	client.majorVersion = resolveMajorVersion(ctx, client.binaryPath)
+	if client.majorVersion < 2 {
+		// Native sessions need v2's --session/--title flags and JSONL sessionID;
+		// the v1 client must not advertise the capability.
+		client.nativeSessions = false
+	}
 
 	// Capture MCP servers for pass-through (only if configured). opencode reads MCP servers
 	// from its config file; we hand it a temp config via OPENCODE_CONFIG at invocation time
@@ -131,6 +135,23 @@ func resolveMajorVersion(ctx context.Context, binaryPath string) int {
 		log.Debug("Could not determine opencode version; assuming v2", "binary", binaryPath)
 	}
 	return major
+}
+
+// applyProviderConfig applies provider-specific settings to the client.
+func applyProviderConfig(client *Client, providerConfig *schema.AIProviderConfig) {
+	if providerConfig == nil {
+		return
+	}
+	if providerConfig.Binary != "" {
+		client.binaryPath = providerConfig.Binary
+	}
+	if providerConfig.Model != "" {
+		client.model = providerConfig.Model
+	}
+	client.fullAuto = providerConfig.FullAuto
+	// Native session continuation defaults to enabled; only an explicit
+	// native_sessions: false opts out (nil = unset).
+	client.nativeSessions = providerConfig.NativeSessions == nil || *providerConfig.NativeSessions
 }
 
 // versionRegex extracts the major version from `opencode --version` output such as
@@ -201,18 +222,34 @@ func (c *Client) buildArgs(message string) []string {
 func (c *Client) SendMessage(ctx context.Context, message string) (string, error) {
 	defer perf.Track(nil, "opencode.Client.SendMessage")()
 
-	args := c.buildArgs(message)
+	out, err := c.runCommand(ctx, c.buildArgs(message))
+	if err != nil {
+		return "", err
+	}
+
+	if c.majorVersion >= 2 {
+		return ExtractResultJSON(out)
+	}
+	return ExtractResult(out)
+}
+
+// runCommand executes the opencode CLI with the given arguments and returns its
+// stdout, wrapping failures with the provider name and any stderr detail. It is
+// the shared subprocess path for one-shot sends and native-session turns.
+func (c *Client) runCommand(ctx context.Context, args []string) ([]byte, error) {
+	defer perf.Track(nil, "opencode.Client.runCommand")()
 
 	cmd := exec.CommandContext(ctx, c.binaryPath, args...) //nolint:gosec // Binary path is from user config or exec.LookPath.
 	cmd.Env = os.Environ()
 
-	// Point opencode at a temp config containing the pass-through MCP servers, cleaned up
-	// after the subprocess exits. Writing per-call keeps multi-turn sessions correct and
-	// leaves no state behind. If MCP config can't be applied we fail instead of silently
-	// running without the servers, env values, and auth wrappers the user configured.
+	// Point opencode at a temp config containing the pass-through MCP servers, cleaned
+	// up after the subprocess exits. Writing per-call keeps multi-turn sessions correct
+	// and leaves no state behind. If MCP config can't be applied we fail instead of
+	// silently running without the servers, env values, and auth wrappers the user
+	// configured.
 	cleanup, err := c.applyMCPConfig(cmd)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	defer cleanup()
 
@@ -223,15 +260,12 @@ func (c *Client) SendMessage(ctx context.Context, message string) (string, error
 	if err := cmd.Run(); err != nil {
 		stderrStr := strings.TrimSpace(stderr.String())
 		if stderrStr != "" {
-			return "", fmt.Errorf("%w: %s: %s: %w", errUtils.ErrCLIProviderExecFailed, ProviderName, stderrStr, err)
+			return nil, fmt.Errorf("%w: %s: %s: %w", errUtils.ErrCLIProviderExecFailed, ProviderName, stderrStr, err)
 		}
-		return "", fmt.Errorf("%w: %s: %w", errUtils.ErrCLIProviderExecFailed, ProviderName, err)
+		return nil, fmt.Errorf("%w: %s: %w", errUtils.ErrCLIProviderExecFailed, ProviderName, err)
 	}
 
-	if c.majorVersion >= 2 {
-		return ExtractResultJSON(stdout.Bytes())
-	}
-	return ExtractResult(stdout.Bytes())
+	return stdout.Bytes(), nil
 }
 
 // SendMessageWithTools is not supported — opencode manages its own tools.
@@ -263,10 +297,10 @@ func (c *Client) SendMessageWithSystemPromptAndTools(
 
 	prompt := base.FormatMessagesAsPrompt(messages)
 	if systemPrompt != "" {
-		prompt = systemPrompt + "\n\n" + prompt
+		prompt = systemPrompt + promptSeparator + prompt
 	}
 	if atmosMemory != "" {
-		prompt = atmosMemory + "\n\n" + prompt
+		prompt = atmosMemory + promptSeparator + prompt
 	}
 
 	result, err := c.SendMessage(ctx, prompt)
@@ -300,9 +334,10 @@ func ExtractResult(output []byte) (string, error) {
 // runEvent is one line of opencode v2's `run --format json` JSONL event stream. Only the
 // fields Atmos needs are modeled; unknown fields are ignored by encoding/json.
 type runEvent struct {
-	Type  string    `json:"type"`
-	Part  *runPart  `json:"part"`
-	Error *runError `json:"error"`
+	Type      string    `json:"type"`
+	SessionID string    `json:"sessionID"`
+	Part      *runPart  `json:"part"`
+	Error     *runError `json:"error"`
 }
 
 // runPart carries the event payload: for "text" events, the assistant text itself.
@@ -337,15 +372,31 @@ func applyRunEvent(answer []string, ev runEvent) ([]string, error) {
 	return answer, nil
 }
 
+// runResult is the parsed outcome of a v2 `run --format json` JSONL stream: the
+// final-step answer text plus the provider session ID (carried by every event).
+type runResult struct {
+	Text      string
+	SessionID string
+}
+
 // ExtractResultJSON extracts the final assistant answer from opencode v2's
-// `run --format json` JSONL event stream. The answer is the concatenation of the "text"
-// event payloads emitted during the final step (after the last "step_start"): earlier
-// steps' text is interim narration ("I'll read that file for you") and "tool_use" parts
-// are never part of the answer. A top-level {"error":...} object fails the call. Output
-// that is not a JSONL stream at all falls back to plain-text extraction, so an unexpected
-// format degrades to the v1 contract instead of erroring.
+// `run --format json` JSONL event stream (see extractRunResultJSON for the exact
+// semantics). It is the one-shot companion of the native-session methods.
 func ExtractResultJSON(output []byte) (string, error) {
+	result, err := extractRunResultJSON(output)
+	return result.Text, err
+}
+
+// extractRunResultJSON parses opencode v2's `run --format json` JSONL event stream.
+// The answer is the concatenation of the "text" event payloads emitted during the
+// final step (after the last "step_start"): earlier steps' text is interim narration
+// ("I'll read that file for you") and "tool_use" parts are never part of the answer.
+// The session ID is the last one seen on any event. A top-level {"error":...} object
+// fails the call. Output that is not a JSONL stream at all falls back to plain-text
+// extraction, so an unexpected format degrades to the v1 contract instead of erroring.
+func extractRunResultJSON(output []byte) (runResult, error) {
 	var answer []string
+	result := runResult{}
 	parsedAny := false
 	for _, line := range strings.Split(string(output), "\n") {
 		line = strings.TrimSpace(line)
@@ -358,22 +409,95 @@ func ExtractResultJSON(output []byte) (string, error) {
 			// Not JSON. If nothing parsed yet, the output is probably plain text (format
 			// flag ignored or an unexpected build) — fall back to text extraction.
 			if !parsedAny {
-				return ExtractResult(output)
+				text, textErr := ExtractResult(output)
+				return runResult{Text: text}, textErr
 			}
-			return "", fmt.Errorf("%w: %s: %w", errUtils.ErrCLIProviderParseResponse, ProviderName, err)
+			return runResult{}, fmt.Errorf("%w: %s: %w", errUtils.ErrCLIProviderParseResponse, ProviderName, err)
 		}
 		parsedAny = true
+		if ev.SessionID != "" {
+			result.SessionID = ev.SessionID
+		}
 		answer, err = applyRunEvent(answer, ev)
 		if err != nil {
-			return "", err
+			return runResult{}, err
 		}
 	}
 
-	joined := strings.TrimSpace(strings.Join(answer, "\n\n"))
-	if joined == "" {
-		return "", errUtils.ErrCLIProviderParseResponse
+	result.Text = strings.TrimSpace(strings.Join(answer, "\n\n"))
+	if result.Text == "" {
+		return runResult{}, errUtils.ErrCLIProviderParseResponse
 	}
-	return joined, nil
+	return result, nil
+}
+
+// NativeSessionProvider implements types.NativeSessionClient: the provider-scoped
+// namespace for stored session IDs, so a provider switch mid-chat never feeds an
+// opencode session ID to another provider.
+func (c *Client) NativeSessionProvider() string {
+	return ProviderName
+}
+
+// StartNativeSession implements types.NativeSessionClient (see the interface for the
+// full contract). The opening turn mirrors SendMessageWithSystemPromptAndTools's
+// prompt shaping exactly, so moving a chat onto a native session changes nothing
+// about what the model sees on turn one; the title names the session in
+// `opencode session list` for discoverability.
+func (c *Client) StartNativeSession(ctx context.Context, systemPrompt, atmosMemory string, messages []types.Message, title string) (string, string, error) {
+	defer perf.Track(nil, "opencode.Client.StartNativeSession")()
+
+	if !c.nativeSessions {
+		return "", "", errUtils.ErrCLIProviderNativeSessionsOff
+	}
+
+	prompt := base.FormatMessagesAsPrompt(messages)
+	if systemPrompt != "" {
+		prompt = systemPrompt + promptSeparator + prompt
+	}
+	if atmosMemory != "" {
+		prompt = atmosMemory + promptSeparator + prompt
+	}
+
+	args := c.buildArgs(prompt)
+	if title != "" {
+		args = append(args, "--title", title)
+	}
+
+	out, err := c.runCommand(ctx, args)
+	if err != nil {
+		return "", "", err
+	}
+	result, err := extractRunResultJSON(out)
+	if err != nil {
+		return "", "", err
+	}
+	if result.SessionID == "" {
+		return "", "", fmt.Errorf("%w: %s", errUtils.ErrCLIProviderNativeSessionIDAbsent, ProviderName)
+	}
+	return result.Text, result.SessionID, nil
+}
+
+// ContinueNativeSession implements types.NativeSessionClient (see the interface for
+// the full contract). --session continues the existing session in place — WITHOUT
+// --fork, which would copy the conversation to a new session ID and leave Atmos's
+// stored ID pointing at a stale branch.
+func (c *Client) ContinueNativeSession(ctx context.Context, sessionID, message string) (string, error) {
+	defer perf.Track(nil, "opencode.Client.ContinueNativeSession")()
+
+	if !c.nativeSessions {
+		return "", errUtils.ErrCLIProviderNativeSessionsOff
+	}
+
+	args := append(c.buildArgs(message), "--session", sessionID)
+	out, err := c.runCommand(ctx, args)
+	if err != nil {
+		return "", err
+	}
+	result, err := extractRunResultJSON(out)
+	if err != nil {
+		return "", err
+	}
+	return result.Text, nil
 }
 
 // opencodeMCPServer is a single local MCP server entry in opencode's config `mcp` map.

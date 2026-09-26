@@ -2,11 +2,13 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	errUtils "github.com/cloudposse/atmos/errors"
 	"github.com/cloudposse/atmos/pkg/ai/tools"
 	aiTypes "github.com/cloudposse/atmos/pkg/ai/types"
 	log "github.com/cloudposse/atmos/pkg/logger"
@@ -268,6 +270,16 @@ func (m *ChatModel) getAIResponseWithContext(userMessage string, ctx context.Con
 		// Apply instructions context if available by prepending a system message.
 		messages = m.prependMemoryContext(messages)
 
+		// Provider-side session continuation (types.NativeSessionClient, opencode v2+):
+		// send only the new turn and let the provider own the context instead of
+		// re-serializing the full history every turn. CLI providers never return
+		// Atmos-native tool calls (they run their own tools), so this path replaces
+		// both the tools and no-tools branches for them. Falls back to the branches
+		// below whenever the capability is unavailable or a native turn fails.
+		if msg, handled := m.tryNativeSessionResponse(ctx, userMessage, messages); handled {
+			return msg
+		}
+
 		// Check if tools are available.
 		var availableTools []tools.Tool
 		if m.executor != nil {
@@ -281,6 +293,147 @@ func (m *ChatModel) getAIResponseWithContext(userMessage string, ctx context.Con
 
 		// Fallback to message with history but no tools.
 		return m.handleNoToolsResponse(ctx, messages)
+	}
+}
+
+// nativeSessionMetadataKey returns the Atmos session-metadata key that holds the
+// provider-side session ID, namespaced by provider (e.g. "native_session:opencode")
+// so switching providers mid-chat never resumes another provider's session.
+func nativeSessionMetadataKey(provider string) string {
+	return "native_session:" + provider
+}
+
+// nativeContinueOutcome classifies the outcome of attempting to continue a
+// provider-side session, driving whether the caller restarts it, falls back to the
+// concatenated-history path, or stops trying native sessions for this chat run.
+type nativeContinueOutcome int
+
+const (
+	nativeContinueNotAvailable nativeContinueOutcome = iota // No stored session ID to continue.
+	nativeContinueSucceeded                                 // The turn was answered by ContinueNativeSession.
+	nativeContinueRestart                                   // Continuation failed; re-open the session with full context.
+	nativeContinueDisabled                                  // The capability is off; stop trying this run.
+)
+
+// Drives a provider-side session when the client implements
+// types.NativeSessionClient (opencode v2+). The first turn opens the session with the
+// same prompt shaping the legacy path applies (system prompt, Atmos memory, and — for
+// a resumed Atmos session or after instructions changed — prior history); later turns
+// send only the new user message via ContinueNativeSession. Handled is false when
+// native continuation is unavailable or failed, letting the caller fall back to the
+// concatenated-history path for that turn.
+func (m *ChatModel) tryNativeSessionResponse(ctx context.Context, userMessage string, messages []aiTypes.Message) (tea.Msg, bool) {
+	if m.nativeSessionDisabled {
+		return nil, false
+	}
+	nc, ok := m.client.(aiTypes.NativeSessionClient)
+	if !ok {
+		return nil, false
+	}
+
+	switch msg, outcome := m.tryContinueNativeSession(ctx, nc, userMessage); outcome {
+	case nativeContinueSucceeded:
+		return msg, true
+	case nativeContinueDisabled:
+		return nil, false
+	case nativeContinueNotAvailable, nativeContinueRestart:
+		// No session to continue (or a stale one): open it below with full context.
+	}
+
+	return m.startNativeSessionTurn(ctx, nc, messages)
+}
+
+// resolveNativeSessionID returns the metadata key and stored provider-side session ID
+// for the given capability, preferring this chat run's in-memory value and falling
+// back to the Atmos session metadata (chats resumed across Atmos restarts).
+func (m *ChatModel) resolveNativeSessionID(nc aiTypes.NativeSessionClient) (string, string) {
+	key := nativeSessionMetadataKey(nc.NativeSessionProvider())
+	if m.nativeSessionKey == key {
+		return key, m.nativeSessionID
+	}
+	if m.sess == nil || m.sess.Metadata == nil {
+		return key, ""
+	}
+	if v, ok := m.sess.Metadata[key].(string); ok {
+		return key, v
+	}
+	return key, ""
+}
+
+// tryContinueNativeSession attempts the continuation turn for a stored provider
+// session ID, classifying failures so the caller can restart or fall back.
+func (m *ChatModel) tryContinueNativeSession(ctx context.Context, nc aiTypes.NativeSessionClient, userMessage string) (tea.Msg, nativeContinueOutcome) {
+	_, storedID := m.resolveNativeSessionID(nc)
+	if storedID == "" {
+		return nil, nativeContinueNotAvailable
+	}
+
+	// Instructions that drifted since the session opened (skill switch, ATMOS.md
+	// edit) must reach the model; the provider session holds the old ones, so
+	// restart it with the full current context.
+	if systemPrompt, memory := m.buildSystemPrompt(), m.getAtmosMemory(); systemPrompt != m.nativeSessionSystemPrompt || memory != m.nativeSessionAtmosMemory {
+		return nil, nativeContinueRestart
+	}
+
+	m.sendTurnStepStarted(turnStepKindAICall, aiCallStepLabel)
+	reply, err := nc.ContinueNativeSession(ctx, storedID, userMessage)
+	m.sendTurnStepFinished(err)
+	switch {
+	case err == nil:
+		return aiResponseMsg{content: reply, usage: nil}, nativeContinueSucceeded
+	case errors.Is(err, errUtils.ErrCLIProviderNativeSessionsOff):
+		m.nativeSessionDisabled = true
+		return nil, nativeContinueDisabled
+	default:
+		log.Debugf("Continuing native %s session failed; restarting it with full context: %v", nc.NativeSessionProvider(), err)
+		return nil, nativeContinueRestart
+	}
+}
+
+// startNativeSessionTurn opens (or re-opens) the provider-side session with the full
+// current context and remembers its ID. Returns handled=false on failure so the
+// caller falls back to the concatenated-history path for this turn.
+func (m *ChatModel) startNativeSessionTurn(ctx context.Context, nc aiTypes.NativeSessionClient, messages []aiTypes.Message) (tea.Msg, bool) {
+	title := ""
+	if m.sess != nil {
+		title = m.sess.Name
+	}
+	systemPrompt, atmosMemory := m.buildSystemPrompt(), m.getAtmosMemory()
+
+	m.sendTurnStepStarted(turnStepKindAICall, aiCallStepLabel)
+	reply, sessionID, err := nc.StartNativeSession(ctx, systemPrompt, atmosMemory, messages, title)
+	m.sendTurnStepFinished(err)
+	if err != nil {
+		if errors.Is(err, errUtils.ErrCLIProviderNativeSessionsOff) {
+			m.nativeSessionDisabled = true
+		}
+		log.Debugf("Starting native %s session failed; falling back to concatenated history: %v", nc.NativeSessionProvider(), err)
+		return nil, false
+	}
+
+	m.rememberNativeSession(ctx, nativeSessionMetadataKey(nc.NativeSessionProvider()), sessionID, systemPrompt, atmosMemory)
+	return aiResponseMsg{content: reply, usage: nil}, true
+}
+
+// rememberNativeSession stores the provider-side session ID both in memory (for
+// chats without Atmos session persistence) and in the Atmos session's metadata (so
+// a chat resumed across Atmos restarts reconnects to the same provider session),
+// alongside the opening-turn instructions for later drift detection.
+func (m *ChatModel) rememberNativeSession(ctx context.Context, key, sessionID, systemPrompt, atmosMemory string) {
+	m.nativeSessionKey = key
+	m.nativeSessionID = sessionID
+	m.nativeSessionSystemPrompt = systemPrompt
+	m.nativeSessionAtmosMemory = atmosMemory
+
+	if m.sess == nil || m.manager == nil {
+		return
+	}
+	if m.sess.Metadata == nil {
+		m.sess.Metadata = make(map[string]interface{})
+	}
+	m.sess.Metadata[key] = sessionID
+	if err := m.manager.UpdateSession(ctx, m.sess); err != nil {
+		log.Debugf("Failed to persist native session ID in Atmos session metadata: %v", err)
 	}
 }
 

@@ -37,6 +37,12 @@ type AIProviderConfig struct {
 	MaxBudgetUSD float64  `yaml:"max_budget_usd,omitempty" json:"max_budget_usd,omitempty" mapstructure:"max_budget_usd"`
 	AllowedTools []string `yaml:"allowed_tools,omitempty" json:"allowed_tools,omitempty" mapstructure:"allowed_tools"`
 	FullAuto     bool     `yaml:"full_auto,omitempty" json:"full_auto,omitempty" mapstructure:"full_auto"`
+	// NativeSessions enables provider-side session continuation for `atmos ai chat`
+	// (opencode v2+): the provider holds the conversation context and Atmos sends only
+	// each new turn. nil means enabled where the provider supports it; false opts out.
+	// Pointer-typed so "unset" can default to enabled, mirroring
+	// AIToolSettings.RequireConfirmation.
+	NativeSessions *bool `yaml:"native_sessions,omitempty" json:"native_sessions,omitempty" mapstructure:"native_sessions"`
 }
 
 // AICacheSettings contains token caching configuration.

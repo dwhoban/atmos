@@ -1585,10 +1585,12 @@ var (
 	ErrAWSCredentialsNotValid      = errors.New("AWS credentials are not configured or have expired")
 
 	// CLI provider errors.
-	ErrCLIProviderBinaryNotFound    = errors.New("CLI provider binary not found on PATH")
-	ErrCLIProviderExecFailed        = errors.New("CLI provider execution failed")
-	ErrCLIProviderParseResponse     = errors.New("failed to parse CLI provider response")
-	ErrCLIProviderToolsNotSupported = errors.New("tool execution not supported for CLI providers; use MCP pass-through instead")
+	ErrCLIProviderBinaryNotFound        = errors.New("CLI provider binary not found on PATH")
+	ErrCLIProviderExecFailed            = errors.New("CLI provider execution failed")
+	ErrCLIProviderParseResponse         = errors.New("failed to parse CLI provider response")
+	ErrCLIProviderToolsNotSupported     = errors.New("tool execution not supported for CLI providers; use MCP pass-through instead")
+	ErrCLIProviderNativeSessionsOff     = errors.New("native sessions are not available for this CLI provider configuration")
+	ErrCLIProviderNativeSessionIDAbsent = errors.New("CLI provider response carried no session ID")
 
 	// Web search errors.
 	ErrWebSearchFailed      = errors.New("web search request failed")

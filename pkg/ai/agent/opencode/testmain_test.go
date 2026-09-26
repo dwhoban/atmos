@@ -2,6 +2,7 @@ package opencode
 
 import (
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -12,6 +13,7 @@ const (
 	fakeStdoutEnv  = "_ATMOS_OPENCODE_FAKE_STDOUT"
 	fakeFailEnv    = "_ATMOS_OPENCODE_FAKE_FAIL"
 	fakeVersionEnv = "_ATMOS_OPENCODE_FAKE_VERSION"
+	fakeArgsEnv    = "_ATMOS_OPENCODE_FAKE_ARGS_FILE"
 )
 
 // defaultFakeVersion is what the fake binary answers for `--version` when
@@ -37,6 +39,13 @@ func TestMain(m *testing.M) {
 		os.Exit(0)
 	}
 	if out := os.Getenv(fakeStdoutEnv); out != "" {
+		// Record argv (minus the binary) so tests can assert on invocation flags like
+		// --session/--title. Placed after the --version branch so the version probe
+		// never clobbers the recorded run invocation.
+		if argsFile := os.Getenv(fakeArgsEnv); argsFile != "" {
+			// NUL-separated so multi-line prompts stay a single recordable argument.
+			_ = os.WriteFile(argsFile, []byte(strings.Join(os.Args[1:], "\x00")+"\x00"), 0o600)
+		}
 		_, _ = os.Stdout.WriteString(out)
 		if os.Getenv(fakeFailEnv) == "1" {
 			os.Exit(1)

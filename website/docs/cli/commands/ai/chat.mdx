@@ -51,6 +51,10 @@ atmos ai chat [flags]
   <dt>`--session <name>`</dt>
   <dd>Start or resume a named session. If the session doesn't exist, it will be created. If it exists, the conversation history will be loaded.</dd>
 
+  :::note Provider-side sessions (opencode v2+)
+  With the opencode CLI provider on v2, chat uses opencode's native sessions: the first turn opens an opencode session (named after your Atmos session) and every following turn sends only the new message, so opencode itself manages the conversation context. Resuming an Atmos session reconnects to the same opencode conversation. See [`native_sessions`](/cli/configuration/ai/providers#native_sessions) to opt out.
+  :::
+
   <dt>`--mcp <servers>`</dt>
   <dd>MCP servers to use (comma-separated). Starts only the specified servers instead of all configured servers. Can be repeated: `--mcp aws-iam --mcp aws-billing`. Use [`atmos mcp list`](/cli/commands/mcp/list) to see available server names. Environment variable: `ATMOS_AI_MCP`</dd>
 </dl>

@@ -171,6 +171,9 @@ In addition to `model`, CLI providers support:
   <dt>`full_auto`</dt>
   <dd>Enable automatic tool approval (Codex CLI, Copilot CLI, and opencode). For Codex, this passes `--full-auto` (or `--dangerously-bypass-approvals-and-sandbox` when MCP servers are configured). For Copilot, this passes `--allow-all-tools` (implied automatically when MCP servers are configured). For opencode, this passes `--auto`, which blanket-approves every permission not explicitly denied; because opencode already allows tool calls by default, this is **only** enabled when you set `full_auto: true` (never implicitly from MCP config), so your opencode `permission` rules are respected.</dd>
 
+  <dt>`native_sessions`</dt>
+  <dd>Enable provider-side session continuation for `atmos ai chat` (opencode v2+). Instead of re-sending the full conversation history every turn, Atmos creates one opencode session (`--title`d after the Atmos session) and sends only each new message with `--session`. The provider then owns context management and compaction. Enabled by default where supported; set `native_sessions: false` to opt out. Any native failure (stale session, old binary) transparently falls back to the concatenated-history behavior for that turn. Provider session IDs are stored in Atmos session metadata (namespaced per provider), so a chat resumed with `--session <name>` reconnects to the same provider-side conversation.</dd>
+
   <dt>`allowed_tools`</dt>
   <dd>List of tools Claude Code is allowed to use (Claude Code only).</dd>
 </dl>
